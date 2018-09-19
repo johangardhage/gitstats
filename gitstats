@@ -41,20 +41,78 @@ echo_verbose()
   fi
 }
 
+print_commits()
+{
+  CMD_GIT=(git --git-dir=$repo/.git log ${CMD_GIT_PARAMS[@]})
+  CMD_GIT=(${CMD_GIT[@]/--pretty="%ae"})
+  CMD_GIT=(${CMD_GIT[@]/--numstat})
+  CMD_GIT+=(--pretty="commit %h %ad %cd%n%s%n%b" --date=short)
+  mapfile -t entries < <("${CMD_GIT[@]}" | awk '$1 == "commit" {if (NR>1) {printf "\n"} printf "%s %s - %s: ", $2, $3, $4; getline; printf "%s", $0} $1 == "Tracking-Id:" {gsub("Tracking-Id:", ""); gsub(/^[ \t]+|[ \t]+$/, ""); printf " [%s]", $0}')
+  for i in "${!entries[@]}"; do
+    echo_verbose ${entries[$i]}
+  done
+  echo_verbose
+}
+
+print_unique_trackingids()
+{
+  CMD_GIT=(git --git-dir=$repo/.git log ${CMD_GIT_PARAMS[@]})
+  CMD_GIT=(${CMD_GIT[@]/--pretty="%ae"})
+  CMD_GIT=(${CMD_GIT[@]/--numstat})
+  mapfile -t entries < <("${CMD_GIT[@]}" | awk '$1 == "Tracking-Id:" {gsub("Tracking-Id:", ""); gsub(/^[ \t]+|[ \t]+$/, ""); gsub(/[ ,]+/, "\n"); print}' | sort -u)
+  for i in "${!entries[@]}"; do
+    echo_verbose ${entries[$i]}
+  done
+  echo_verbose
+}
+
+print_commit_log()
+{
+  CMD_GIT=(git --git-dir=$repo/.git log ${CMD_GIT_PARAMS[@]})
+  CMD_GIT=(${CMD_GIT[@]/--pretty="%ae"})
+  CMD_GIT=(${CMD_GIT[@]/--numstat})
+  CMD_GIT+=(--shortstat)
+  mapfile -t entries < <("${CMD_GIT[@]}" | awk NF | awk '$1 == "commit" {if (NR>1) {printf "\n"}} {print}')
+  for i in "${!entries[@]}"; do
+    echo_verbose ${entries[$i]}
+  done
+  echo_verbose
+}
+
+print_changed_files()
+{
+  CMD_GIT=(git --git-dir=$repo/.git log ${CMD_GIT_PARAMS[@]})
+  mapfile -t entries < <("${CMD_GIT[@]}" | awk ''$CMD_AWK_PARAMS' NF>=3 {print $1, $2, $3}')
+  for i in "${!entries[@]}"; do
+    echo_verbose ${entries[$i]}
+  done
+  echo_verbose
+}
+
 generate_statistics()
 {
   totalcount=0
   for repo in $GIT_REPOS; do
     echo_verbose "$repo .."
 
-    if (( $VERBOSE >= 3 )); then
-      entries=($(git --git-dir $repo/.git log ${CMD_GIT_PARAMS[@]} | awk ''$CMD_AWK_PARAMS' NF>=3 {print $1, $2, $3}'))
-      for (( i = 0; i < ${#entries[@]}; i += 3 )); do
-        echo_verbose ${entries[i]} ${entries[i+1]} ${entries[i+2]}
-      done
+    if (( $VERBOSE >= 2 )); then
+      print_commits
     fi
 
-    entries=($(git --git-dir $repo/.git log ${CMD_GIT_PARAMS[@]} \
+    if (( $VERBOSE >= 3 )); then
+      print_unique_trackingids
+    fi
+
+    if (( $VERBOSE >= 4 )); then
+      print_commit_log
+    fi
+
+    if (( $VERBOSE >= 5 )); then
+      print_changed_files
+    fi
+
+    CMD_GIT=(git --git-dir=$repo/.git log ${CMD_GIT_PARAMS[@]})
+    entries=($("${CMD_GIT[@]}" \
       | awk '\
           NF==1 {author=$1; commits[author]++} '$CMD_AWK_PARAMS' NF>=3 {insertions[author]+=$1; deletions[author]+=$2; engagement[author]+=($1+$2); files[author]++}\
         END {\
@@ -121,7 +179,7 @@ get_weekdays()
   weekdays=0
   for i in $(seq $totaldays); do
     if [[ $(date --date="-$i day" +%u) -le 5 ]]; then
-      if (( $VERBOSE >= 2 )); then
+      if (( $VERBOSE >= 6 )); then
         echo_verbose $(date -d "-$i day" +"Weekday: %Y%m%d")
       fi
       ((weekdays++))
