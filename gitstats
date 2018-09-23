@@ -112,48 +112,43 @@ generate_statistics()
     fi
 
     CMD_GIT=(git --git-dir=$repo/.git log ${CMD_GIT_PARAMS[@]})
-    entries=($("${CMD_GIT[@]}" \
+    mapfile -t entries < <("${CMD_GIT[@]}" \
       | awk '\
-          NF==1 {author=$1; commits[author]++} '$CMD_AWK_PARAMS' NF>=3 {insertions[author]+=$1; deletions[author]+=$2; engagement[author]+=($1+$2); files[author]++}\
+          NF==1 {author=$1; files[author]+=0; insertions[author]+=0; deletions[author]+=0; engagement[author]+=0; commits[author]++}\
+          '$CMD_AWK_PARAMS'\
+          NF>=3 {files[author]++; insertions[author]+=$1; deletions[author]+=$2; engagement[author]+=($1+$2)}\
         END {\
           for (author in commits) {\
-            if (files[author] == "") {\
-              files[author]=0; insertions[author]=0; deletions[author]=0; engagement[author]=0;\
-            }\
             print author, files[author], insertions[author], deletions[author], engagement[author], commits[author]\
           }\
-        }'))
+        }')
 
-    for (( i = 0; i < ${#entries[@]}; i += 6 )); do
-      author=${entries[i+0]}
-      files=${entries[i+1]}
-      insertions=${entries[i+2]}
-      deletions=${entries[i+3]}
-      engagement=${entries[i+4]}
-      commits=${entries[i+5]}
-      repos=$repo
+    for key in "${!entries[@]}"; do
+      entry=(${entries[$key]}) # author[0] files[1] insertions[2] deletions[3] engagement[4] commits[5]
 
-      if [[ $author == "kacxadm@noreply.epk.ericsson.se" ]]; then
+      if [[ ${entry[0]} == "kacxadm@noreply.epk.ericsson.se" ]]; then
         continue
       fi
+
+      repos=$repo
 
       ((totalcount++))
       key=$totalcount
 
       if [[ $STAT_AGGREGATE == "true" ]]; then
-        key=$author
+        key=${entry[0]}
         if [[ -v statistics[$key] ]]; then
-          files=$(($(echo ${statistics[$key]} | awk '{print $2}') + $files))
-          insertions=$(($(echo ${statistics[$key]} | awk '{print $3}') + $insertions))
-          deletions=$(($(echo ${statistics[$key]} | awk '{print $4}') + $deletions))
-          engagement=$(($(echo ${statistics[$key]} | awk '{print $5}') + $engagement))
-          commits=$(($(echo ${statistics[$key]} | awk '{print $6}') + $commits))
-          repos=$(echo ${statistics[$key]} | awk '{print $7}'),$repo
+          statistic=(${statistics[$key]}) # author[0] files[1] insertions[2] deletions[3] engagement[4] commits[5] repos[6]
+          entry[1]=$((${statistic[1]} + ${entry[1]})) # files
+          entry[2]=$((${statistic[2]} + ${entry[2]})) # insertions
+          entry[3]=$((${statistic[3]} + ${entry[3]})) # deletions
+          entry[4]=$((${statistic[4]} + ${entry[4]})) # engagement
+          entry[5]=$((${statistic[5]} + ${entry[5]})) # commits
+          repos="${statistic[6]}",$repo
         fi
       fi
 
-      entry="$author $files $insertions $deletions $engagement $commits $repos"
-      statistics[$key]=$entry
+      statistics[$key]="${entry[0]} ${entry[1]} ${entry[2]} ${entry[3]} ${entry[4]} ${entry[5]} $repos"
     done
   done
 }
@@ -210,7 +205,8 @@ print_statistics()
 {
   totalengagement=0
   for key in "${!statistics[@]}"; do
-    totalengagement=$(($(echo ${statistics[$key]} | awk '{print $5}') + $totalengagement))
+    statistic=(${statistics[$key]}) # author[0] files[1] insertions[2] deletions[3] engagement[4] commits[5] repos[6]
+    totalengagement=$((${statistic[4]} + $totalengagement))
   done
   if (( $totalengagement == 0 )); then
     totalengagement=1
@@ -227,13 +223,14 @@ print_statistics()
   fi
 
   for key in "${!statistics[@]}"; do
-    author=$(echo ${statistics[$key]} | awk '{print $1}')
-    files=$(echo ${statistics[$key]} | awk '{print $2}')
-    insertions=$(echo ${statistics[$key]} | awk '{print $3}')
-    deletions=$(echo ${statistics[$key]} | awk '{print $4}')
-    engagement=$(echo ${statistics[$key]} | awk '{print $5}')
-    commits=$(echo ${statistics[$key]} | awk '{print $6}')
-    repos=$(echo ${statistics[$key]} | awk '{print $7}')
+    statistic=(${statistics[$key]}) # author[0] files[1] insertions[2] deletions[3] engagement[4] commits[5] repos[6]
+    author=${statistic[0]}
+    files=${statistic[1]}
+    insertions=${statistic[2]}
+    deletions=${statistic[3]}
+    engagement=${statistic[4]}
+    commits=${statistic[5]}
+    repos=${statistic[6]}
     if [[ $STAT_TRIM_REPOS == "true" ]]; then
       repos=$(get_trimmed_repos $repos)
     fi
