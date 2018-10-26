@@ -1,0 +1,348 @@
+#!/bin/bash
+#
+# Script for generating git statistics
+#
+# Author: Johan Gardhage <johan.gardhage@gmail.com>
+#
+
+### Environment variables and default options ###
+
+GIT_REPOS=""            # Git repositories
+AUTHORS=""              # Commits created by specific authors
+STARTDATE="2018-01-01"  # Commits since beginning of this year
+ENDDATE="today"         # Commits until today
+GREP_MESSAGE=""         # Commits containing specific commit message
+GREP_INVERT="false"     # Do not limit commits to ones with log message that do not match above message
+AWK_FILES=""            # Commits containing specific types of files
+AWK_INVERT="false"      # Do not limit commits to ones with files that do not match above file types
+STAT_FORMAT="table"     # Show the statistics in a table
+STAT_NUMBER=""          # Number of statistics entries to show, leave empty for all entries
+STAT_AGGREGATE="false"  # Do not aggregate the statistics
+STAT_TRIM_REPOS="true"  # Trim repositories
+SORT_COLUMN="7,6"       # Sort the statistics on "Engagement (%)" (contribution) and "Engagement"
+VERBOSE=0               # Do not enable verbose mode
+
+### Command variables - will be set depending on runtime options ###
+
+CMD_SORT=""
+CMD_HEAD=""
+CMD_CAT=""
+CMD_GIT_PARAMS=""
+CMD_AWK_PARAMS=""
+
+declare -A statistics
+
+### Functions ###
+
+echo_verbose()
+{
+  if (( $VERBOSE > 0 )); then
+    echo "$@" >&2
+  fi
+}
+
+generate_statistics()
+{
+  totalcount=0
+  for repo in $GIT_REPOS; do
+    echo_verbose "$repo .."
+
+    if (( $VERBOSE >= 3 )); then
+      entries=($(git --git-dir $repo/.git log ${CMD_GIT_PARAMS[@]} | awk ''$CMD_AWK_PARAMS' NF>=3 {print $1, $2, $3}'))
+      for (( i = 0; i < ${#entries[@]}; i += 3 )); do
+        echo_verbose ${entries[i]} ${entries[i+1]} ${entries[i+2]}
+      done
+    fi
+
+    entries=($(git --git-dir $repo/.git log ${CMD_GIT_PARAMS[@]} \
+      | awk '\
+          NF==1 {author=$1; commits[author]++} '$CMD_AWK_PARAMS' NF>=3 {insertions[author]+=$1; deletions[author]+=$2; engagement[author]+=($1+$2); files[author]++}\
+        END {\
+          for (author in commits) {\
+            if (files[author] == "") {\
+              files[author]=0; insertions[author]=0; deletions[author]=0; engagement[author]=0;\
+            }\
+            print author, files[author], insertions[author], deletions[author], engagement[author], commits[author]\
+          }\
+        }'))
+
+    for (( i = 0; i < ${#entries[@]}; i += 6 )); do
+      author=${entries[i+0]}
+      files=${entries[i+1]}
+      insertions=${entries[i+2]}
+      deletions=${entries[i+3]}
+      engagement=${entries[i+4]}
+      commits=${entries[i+5]}
+      repos=$repo
+
+      if [[ $author == "kacxadm@noreply.epk.ericsson.se" ]]; then
+        continue
+      fi
+
+      ((totalcount++))
+      key=$totalcount
+
+      if [[ $STAT_AGGREGATE == "true" ]]; then
+        key=$author
+        if [[ -v statistics[$key] ]]; then
+          files=$(($(echo ${statistics[$key]} | awk '{print $2}') + $files))
+          insertions=$(($(echo ${statistics[$key]} | awk '{print $3}') + $insertions))
+          deletions=$(($(echo ${statistics[$key]} | awk '{print $4}') + $deletions))
+          engagement=$(($(echo ${statistics[$key]} | awk '{print $5}') + $engagement))
+          commits=$(($(echo ${statistics[$key]} | awk '{print $6}') + $commits))
+          repos=$(echo ${statistics[$key]} | awk '{print $7}'),$repo
+        fi
+      fi
+
+      entry="$author $files $insertions $deletions $engagement $commits $repos"
+      statistics[$key]=$entry
+    done
+  done
+}
+
+get_company()
+{
+  company="Non-Ericsson"
+  if [[ "$1" == *"ericsson"* ]]; then
+    company="Ericsson"
+  elif [[ "$1" == *"softhouse"* ]]; then
+    company="Softhouse"
+  elif [[ "$1" == *"sigma"* ]]; then
+    company="Sigma"
+  elif [[ "$1" == *"inatel"* ]]; then
+    company="Inatel"
+  fi
+  echo $company
+}
+
+get_weekdays()
+{
+  totaldays=$(( ($(date -d $ENDDATE +%s) - $(date -d $STARTDATE +%s)) / 86400 ))
+  weekdays=0
+  for i in $(seq $totaldays); do
+    if [[ $(date --date="-$i day" +%u) -le 5 ]]; then
+      if (( $VERBOSE >= 2 )); then
+        echo_verbose $(date -d "-$i day" +"Weekday: %Y%m%d")
+      fi
+      ((weekdays++))
+    fi
+  done
+  echo_verbose "Total days: $totaldays"
+  echo_verbose "Weekdays: $weekdays"
+  echo $weekdays
+}
+
+get_trimmed_repos()
+{
+  repos=${1//,/ }
+  trimmed_repos=""
+  for repo in $repos; do
+    if [[ "${repo: -1}" == "/" ]]; then
+      repo="${repo::-1}"
+    fi
+    repo="${repo##*/}"
+    repo="${repo##*.}"
+    trimmed_repos+="$repo,"
+  done
+  trimmed_repos="${trimmed_repos::-1}"
+  echo $trimmed_repos
+}
+
+print_statistics()
+{
+  totalengagement=0
+  for key in "${!statistics[@]}"; do
+    totalengagement=$(($(echo ${statistics[$key]} | awk '{print $5}') + $totalengagement))
+  done
+  if (( $totalengagement == 0 )); then
+    totalengagement=1
+  fi
+
+  weekdays=$(get_weekdays)
+
+  if [[ $STAT_FORMAT == "table" ]]; then
+    printf "%-7s %-45s %-15s %-15s %-15s %-15s %-15s %-15s %-15s %-15s %-30s\n" "" "Author" "Company" "Changed files" "Added lines" "Deleted lines" "Engagement" "Engagement (%)" "Commits" "Commits / day" "Repository"
+    printf "%-7s %-45s %-15s %-15s %-15s %-15s %-15s %-15s %-15s %-15s %-30s\n" "" "---------------------------------------------" "---------------" "---------------" "---------------" "---------------" "---------------" \
+      "---------------" "---------------" "---------------" "-------------------------"
+  else
+    printf "Author,Company,Changed files,Added lines,Deleted lines,Engagement,Engagement (%%),Commits,Commits / day,Repository\n"
+  fi
+
+  for key in "${!statistics[@]}"; do
+    author=$(echo ${statistics[$key]} | awk '{print $1}')
+    files=$(echo ${statistics[$key]} | awk '{print $2}')
+    insertions=$(echo ${statistics[$key]} | awk '{print $3}')
+    deletions=$(echo ${statistics[$key]} | awk '{print $4}')
+    engagement=$(echo ${statistics[$key]} | awk '{print $5}')
+    commits=$(echo ${statistics[$key]} | awk '{print $6}')
+    repos=$(echo ${statistics[$key]} | awk '{print $7}')
+    if [[ $STAT_TRIM_REPOS == "true" ]]; then
+      repos=$(get_trimmed_repos $repos)
+    fi
+    contribution=$(awk -v item=$engagement -v total=$totalengagement 'BEGIN { printf "%.2f\n", 100 * item / total }')
+    commitsperday=$(awk -v item=$commits -v total=$weekdays 'BEGIN { printf "%.2f\n", item / total }')
+    company=$(get_company $author)
+
+    if [[ $STAT_FORMAT == "table" ]]; then
+      printf "%-45s %-15s %-15s %-15s %-15s %-15s %-15s %-15s %-15s %-30s\n" "$author" "$company" "$files" "$insertions" "$deletions" "$engagement" "$contribution" "$commits" "$commitsperday" "$repos"
+    else
+      printf "$author,$company,$files,$insertions,$deletions,$engagement,$contribution,$commits,$commitsperday,\"$repos\"\n"
+    fi
+  done |
+  $CMD_SORT |
+  $CMD_HEAD |
+  $CMD_CAT
+}
+
+usage()
+{ 
+  cat <<EOF
+Usage: $(basename $0) [OPTION]... [FILE]...
+
+Options:
+ -h, --help
+       Display this help and exit.
+ -v, --verbose
+       Enable verbose mode. This causes extra information to be written to standard error.
+       Each instance of "-v" or "--verbose" on the command line increases the verbosity level by one.
+ -a <pattern>, --authors=<pattern>
+       Show commits from list of authors, separated by space.
+ -s <date>, --since=<date>
+       Show commits more recent than a specific date. Default is "$STARTDATE".
+ -u <date>, --until=<date>
+       Show commits older than a specific date. Default is "$ENDDATE".
+ -o <number>, --sort=<number>
+       Sort statistics on column number.
+ -f <pattern>, --format=<pattern>
+       The format of the output. Options are "table" and "csv". Default is "$STAT_FORMAT".
+ -n <number>, --number=<number>
+       Print the first number of entries.
+ -g, --aggregate
+       Aggregate the statistics.
+ --grep=<pattern>
+       Show commits containing specific commit message. Example:
+        --grep="BSUC:FT12-23" will show commits for BSUC FT12-23.
+ --igrep
+       Limit the commits output to ones with log message that do not match the pattern specified with --grep=<pattern>.
+ --files=<pattern>
+       Show commits containing specific types of files. Example:
+        --files="java$,Test" will show commits containing java files and with "Test" in the name.
+        --files="java$,\!Test" will show commits containing java files and without "Test" in the name.
+        --files="java$|js$" will show commits containing java or javascript files.
+ --ifiles
+       Limit the commits output to ones with files that do not match the pattern specified with --files=<pattern>.
+EOF
+}
+
+### Main ###
+
+params=$(getopt -o "hva:s:u:o:f:n:g" -l "help,verbose,authors:,since:,until:,sort:,format:,number:,aggregate,grep:,igrep,files:,ifiles" -n "$(basename $0)" -- "$@")
+
+if [[ $? -ne 0 ]]; then
+  usage
+  exit 1
+fi
+
+eval set -- "$params"
+unset params
+
+while true; do
+  case "$1" in
+    -h | --help) usage; exit 0 ;;
+    -v | --verbose) ((VERBOSE++)); shift ;;
+    -a | --authors) AUTHORS=$2; shift 2 ;;
+    -s | --since) STARTDATE=$2; shift 2 ;;
+    -u | --until) ENDDATE=$2; shift 2 ;;
+    -o | --sort) SORT_COLUMN=$2; shift 2 ;;
+    -f | --format) STAT_FORMAT=$2; shift 2 ;;
+    -n | --number) STAT_NUMBER=$2; shift 2 ;;
+    -g | --aggregate) STAT_AGGREGATE="true"; shift ;;
+    --grep) GREP_MESSAGE=$2; shift 2 ;;
+    --igrep) GREP_INVERT="true"; shift ;;
+    --files) AWK_FILES=$2; shift 2 ;;
+    --ifiles) AWK_INVERT="true"; shift ;;
+    --) shift; break ;;
+    *) usage; exit 1 ;;
+  esac
+done
+
+# Postprocess parameters
+
+for arg; do
+  if [[ $arg == "." || $arg == "./" ]]; then
+    arg=$PWD
+  fi
+  GIT_REPOS+="$arg "
+done
+
+if [[ -z $GIT_REPOS ]]; then
+  usage
+  exit 1
+fi
+
+CMD_SORT="sort"
+if [[ ! -z $SORT_COLUMN ]]; then
+  SORT_COLUMN=${SORT_COLUMN//,/ }
+  for column in $SORT_COLUMN; do
+    if [[ $column == 1 || $column == 2 || $column == 10 ]]; then
+      CMD_SORT="$CMD_SORT -k"$column"b",$column
+    elif [[ $column == 7 || $column == 9 ]]; then
+      CMD_SORT="$CMD_SORT -k"$column"b",$column"Vr"
+    else
+      CMD_SORT="$CMD_SORT -k"$column"b",$column"gr"
+    fi
+  done
+fi
+
+if [[ $STAT_FORMAT == "csv" ]]; then
+  CMD_SORT="$CMD_SORT -t,"
+fi
+
+if [[ $STAT_FORMAT == "table" ]]; then
+  CMD_CAT="cat -n"
+else
+  CMD_CAT="cat"
+fi
+
+if [[ -z $STAT_NUMBER ]]; then
+  CMD_HEAD="head -n -0"
+else
+  CMD_HEAD="head -n $STAT_NUMBER"
+fi
+
+CMD_GIT_PARAMS=(--no-merges --numstat --pretty="%ae" --since=$STARTDATE --until=$ENDDATE)
+if [[ ! -z $AUTHORS ]]; then
+  AUTHORS=${AUTHORS//,/"\|"}
+  AUTHORS=${AUTHORS// /"\|"}
+  CMD_GIT_PARAMS+=(--author=$AUTHORS --regexp-ignore-case)
+fi
+if [[ ! -z $GREP_MESSAGE ]]; then
+  CMD_GIT_PARAMS+=(--grep="$GREP_MESSAGE")
+  if [[ $GREP_INVERT == "true" ]]; then
+    CMD_GIT_PARAMS+=(--invert-grep)
+  fi
+fi
+echo_verbose "CMD_GIT_PARAMS: ${CMD_GIT_PARAMS[@]}"
+
+if [[ ! -z $AWK_FILES ]]; then
+  AWK_FILES=${AWK_FILES//,/ }
+  AWK_FILES=${AWK_FILES//"\!"/!}
+  for file in $AWK_FILES; do
+    if [[ ${file:0:1} == "!" ]]; then
+      CMD_AWK_PARAMS="$CMD_AWK_PARAMS!/${file:1}/"'&&'
+    else
+      CMD_AWK_PARAMS="$CMD_AWK_PARAMS/$file/"'&&'
+    fi
+  done
+  if [[ $AWK_INVERT == "true" ]]; then
+    CMD_AWK_PARAMS="!(${CMD_AWK_PARAMS::-2})"'&&'
+  fi
+  echo_verbose "CMD_AWK_PARAMS: $CMD_AWK_PARAMS"
+fi
+
+# Generate statistics
+
+generate_statistics
+print_statistics
+
+exit 0
